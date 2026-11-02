@@ -25,7 +25,8 @@ def auto_enable_custom_integrations(enable_custom_integrations: None) -> None:
 
 
 async def make_appliance(api: FakeApi, zone: int = 0) -> HonAppliance:
-    appliance = await HonAppliance(api, dict(APPLIANCE), zone=zone).create()  # type: ignore
+    data = dict(getattr(api, "appliance", APPLIANCE))
+    appliance = await HonAppliance(api, data, zone=zone).create()  # type: ignore
     await appliance.load_commands()
     await appliance.load_attributes()
     await appliance.load_statistics()
@@ -37,9 +38,12 @@ class FakeHon:
 
     instance: "FakeHon"
 
-    def __init__(self, appliances: list[HonAppliance]) -> None:
+    def __init__(self, appliances: list[HonAppliance], api: Any = None) -> None:
         self.appliances = appliances
-        self.api = SimpleNamespace(auth=SimpleNamespace(refresh_token="test-token"))
+        self.api = SimpleNamespace(
+            auth=SimpleNamespace(refresh_token="test-token"),
+            load_appliances=getattr(api, "load_appliances", None),
+        )
         self._notify: Callable[[Any], None] | None = None
 
     async def create(self) -> "FakeHon":
@@ -65,7 +69,7 @@ async def hon(api: FakeApi) -> FakeHon:
         await make_appliance(api, zone=2),
         await make_appliance(api),
     ]
-    return FakeHon(appliances)
+    return FakeHon(appliances, api)
 
 
 @pytest.fixture

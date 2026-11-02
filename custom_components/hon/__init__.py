@@ -11,7 +11,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from pyhon import Hon
 
 from .const import DOMAIN, PLATFORMS, MOBILE_ID, CONF_REFRESH_TOKEN
-from . import wine_cellar
+from . import maintenance, wine_cellar
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -54,7 +54,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             # pyhon syncs settings before attributes load: targets stay 5 °C
             wine_cellar.seed_settings(appliance)
 
+    refresher = maintenance.MaintenanceRefresher(hon)
+
     async def _async_refresh() -> dict[str, Any]:
+        # Maintenance (carbon filter, check-up) at most every 6 h, not every poll
+        await refresher.async_refresh()
         return await wine_cellar.async_refresh(hon.appliances)
 
     # Push only by default; wine cellars additionally poll as a fallback
@@ -68,7 +72,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hon.subscribe_updates(coordinator.async_set_updated_data)
 
     hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN][entry.unique_id] = {"hon": hon, "coordinator": coordinator}
+    hass.data[DOMAIN][entry.unique_id] = {
+        "hon": hon,
+        "coordinator": coordinator,
+        "maintenance": refresher,
+    }
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 

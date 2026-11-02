@@ -24,6 +24,18 @@ APPLIANCE: dict[str, Any] = {
     "serialNumber": "SERIAL123456",
     "zone": "2",
     "topics": {"subscribe": [f"haier/things/{MAC}/event/appliancestatus/update"]},
+    "lastCheckUp": "2025-03-14T08:30:00.0Z",
+}
+
+# commands/v1/maintenance-cycle payload of a HWS77GDAU1 (shape and counters from
+# the live appliance's anonymised hOn dump, Nov 2026; date as shown in the hOn app)
+MAINTENANCE: dict[str, Any] = {
+    "carbonFilter": {
+        "lastReplacement": "2024-01-05T09:00:00.000Z",
+        "percentage": 282,
+        "remainingTime": "-PT15981H20M32.23S",
+    },
+    "resultCode": "0",
 }
 
 
@@ -143,10 +155,20 @@ STATE: dict[str, str] = {
 class FakeApi:
     """Stands in for pyhon's HonAPI: no network, records every command."""
 
-    def __init__(self, state: dict[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        state: dict[str, str] | None = None,
+        maintenance: dict[str, Any] | None = None,
+        appliance: dict[str, Any] | None = None,
+    ) -> None:
         self.state = dict(state or STATE)
+        self.maintenance = copy.deepcopy(
+            MAINTENANCE if maintenance is None else maintenance
+        )
+        self.appliance = dict(APPLIANCE if appliance is None else appliance)
         self.sent: list[dict[str, Any]] = []
         self.accept = True
+        self.maintenance_calls = 0
 
     async def load_commands(self, appliance: Any) -> dict[str, Any]:
         return copy.deepcopy(COMMANDS)
@@ -169,7 +191,11 @@ class FakeApi:
         return {}
 
     async def load_maintenance(self, appliance: Any) -> dict[str, Any]:
-        return {}
+        self.maintenance_calls += 1
+        return copy.deepcopy(self.maintenance)
+
+    async def load_appliances(self) -> list[dict[str, Any]]:
+        return [dict(self.appliance)]
 
     async def send_command(
         self,

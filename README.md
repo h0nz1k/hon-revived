@@ -503,6 +503,15 @@ Support has been confirmed for these **3 models**, but many more will work. Plea
 | Selected Temperature 2 | `thermometer` | `sensor` | `tempSelZ2` |
 | Temperature | `thermometer` | `sensor` | `temp` |
 | Temperature 2 | `thermometer` | `sensor` | `tempZ2` |
+#### Maintenance
+Read from the hOn maintenance data (refreshed at most every 6 h); each entity is only created when the cloud reports its key.
+
+| Name | Icon | Entity | Key |
+| --- | --- | --- | --- |
+| Carbon filter last replaced | `air-filter` | `sensor` | `carbonFilter.lastReplacement` |
+| Carbon filter age | `air-filter` | `sensor` | `carbonFilter.age` (months) |
+| Carbon filter replacement due | `air-filter` | `binary_sensor` | `carbonFilter.due` (12+ months, or overdue in hOn) |
+| Smart check-up last run | `clipboard-check-outline` | `sensor` | `lastCheckUp` |
 
 </details>
 
