@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+# pytest fixtures are injected by parameter name
+# pylint: disable=redefined-outer-name
+
 from types import SimpleNamespace
 from typing import Any, AsyncGenerator, Callable
 from unittest.mock import patch

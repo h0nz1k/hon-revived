@@ -1,3 +1,4 @@
+# pylint: disable=too-many-lines
 import logging
 from dataclasses import dataclass
 from datetime import datetime

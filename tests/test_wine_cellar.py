@@ -37,7 +37,7 @@ async def test_settings_defaults_are_the_bug(api: FakeApi) -> None:
     assert device.get("tempSelZ2") == 7.8
     device.sync_params_to_command("settings")
     assert device.get("settings.tempSelZ2") == 7
-    assert wine_cellar.seed_settings(device) == []
+    assert not wine_cellar.seed_settings(device)
     assert device.get("settings.tempSel") == 16
     assert device.get("settings.tempSelZ2") == 8
 
@@ -248,6 +248,8 @@ async def test_mqtt_push_reaches_base_device(
 ) -> None:
     """pyhon routes a push to the first appliance on the topic: must be the base."""
     assert hon.appliances[0].zone == 0
+    # Drive pyhon's MQTT handler directly, the way a push arrives
+    # pylint: disable=protected-access
     client = MQTTClient.__new__(MQTTClient)
     client._appliances = hon.appliances
     client._hon = hon

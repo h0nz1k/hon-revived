@@ -9,6 +9,9 @@ contain no wine cellar; their ``filterCleaning`` shape must be ignored.
 
 from __future__ import annotations
 
+# pytest fixtures are injected by parameter name
+# pylint: disable=redefined-outer-name
+
 import json
 from datetime import datetime, timedelta, timezone
 from typing import Any

@@ -164,7 +164,7 @@ def last_check_up(device: HonAppliance) -> datetime | None:
     return parse_datetime(device.info.get(LAST_CHECK_UP))
 
 
-class MaintenanceRefresher:
+class MaintenanceRefresher:  # pylint: disable=too-few-public-methods
     """Re-reads maintenance data at most every REFRESH_INTERVAL."""
 
     def __init__(self, hon: Any, interval: timedelta = REFRESH_INTERVAL) -> None:

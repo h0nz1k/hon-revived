@@ -194,6 +194,7 @@ def zone_program(device: HonAppliance, key: str) -> str | None:
     )
 
 
+# pylint: disable-next=too-many-locals
 def zone_command(  # noqa: C901 - mirrors the app's program/zone rules
     device: HonAppliance,
     key: str,
