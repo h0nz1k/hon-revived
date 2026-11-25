@@ -53,7 +53,7 @@ TEMPERATURE_KEYS = tuple(temp for _, temp in ZONES.values())
 
 
 def is_wine_cellar(device: HonAppliance) -> bool:
-    return device.appliance_type == WINE_CELLAR
+    return getattr(device, "appliance_type", None) == WINE_CELLAR
 
 
 def reported(device: HonAppliance, key: str) -> float | str | None:
@@ -194,7 +194,7 @@ def zone_program(device: HonAppliance, key: str) -> str | None:
     )
 
 
-def zone_command(
+def zone_command(  # noqa: C901 - mirrors the app's program/zone rules
     device: HonAppliance,
     key: str,
     temperature: float | None = None,

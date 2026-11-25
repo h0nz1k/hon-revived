@@ -12,7 +12,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
 from pyhon.connection.mqtt import MQTTClient
-from pytest_homeassistant_custom_component.common import async_fire_time_changed
+from pytest_homeassistant.common import async_fire_time_changed
 
 from custom_components.hon import wine_cellar
 from tests.conftest import FakeHon, entity_id, make_appliance
@@ -27,13 +27,14 @@ def base(hon: FakeHon):
 
 
 async def test_settings_defaults_are_the_bug(api: FakeApi) -> None:
-    """Root cause: pyhon syncs settings before attributes load (5 °C defaults
-    stay until a push/update reaches this appliance object), and when it syncs it
-    truncates the °F round trip (7.8 -> 7 instead of 8)."""
+    """Root cause: the cellar reports whole °F, pyhon truncates the round trip
+    (8 °C -> 46 °F -> 7.8 °C becomes 7), so a full `settings` send would move
+    zone 2 to 7 °C. pyhon-revived 0.20 syncs at load (0.19 left the 5 °C
+    defaults until a push arrived); seeding still has to round the reported
+    values."""
     device = await make_appliance(api)
-    assert device.get("settings.tempSel") == 5
-    assert device.get("settings.tempSelZ2") == 5
     assert device.get("tempSel") == 16.1
+    assert device.get("tempSelZ2") == 7.8
     device.sync_params_to_command("settings")
     assert device.get("settings.tempSelZ2") == 7
     assert wine_cellar.seed_settings(device) == []
