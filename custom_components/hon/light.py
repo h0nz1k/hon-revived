@@ -116,7 +116,7 @@ class HonLightEntity(HonEntity, LightEntity):
         if wine_cellar.is_wine_cellar(self._device):
             # Never resend `settings`: its tempSel/tempSelZ2 reset both zones
             await wine_cellar.async_set_light(self._device, self._parameter, on)
-            wine_cellar.schedule_confirm(self.hass, self.coordinator)
+            wine_cellar.push_optimistic(self.coordinator)
         else:
             await self._device.commands[self._command].send_specific([self._parameter])
         self.schedule_update_ha_state()

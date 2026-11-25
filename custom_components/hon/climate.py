@@ -464,7 +464,7 @@ class HonClimateEntity(HonEntity, ClimateEntity):
             await wine_cellar.async_set_zone(
                 self._device, self.entity_description.key, temperature=temperature
             )
-            wine_cellar.schedule_confirm(self.hass, self.coordinator)
+            wine_cellar.push_optimistic(self.coordinator)
             self.schedule_update_ha_state()
             return
         self._device.settings[self.entity_description.key].value = str(int(temperature))
@@ -517,7 +517,7 @@ class HonClimateEntity(HonEntity, ClimateEntity):
             await wine_cellar.async_set_zone(
                 self._device, self.entity_description.key, program=preset_mode
             )
-            wine_cellar.schedule_confirm(self.hass, self.coordinator)
+            wine_cellar.push_optimistic(self.coordinator)
             self.schedule_update_ha_state()
             return
         if preset_mode == "no_mode" and HVACMode.OFF in self.hvac_modes:

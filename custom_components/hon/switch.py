@@ -463,7 +463,7 @@ class HonSwitchEntity(HonEntity, SwitchEntity):
             await wine_cellar.async_send_settings(
                 self._device, {self.entity_description.key: value}
             )
-            wine_cellar.schedule_confirm(self.hass, self.coordinator)
+            wine_cellar.push_optimistic(self.coordinator)
             self.schedule_update_ha_state()
             return
         setting.value = value

@@ -47,27 +47,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
 
     wine_cellar.prefer_base_appliances(hon.appliances)
-    has_wine_cellar = False
     for appliance in hon.appliances:
         if wine_cellar.is_wine_cellar(appliance):
-            has_wine_cellar = True
             # pyhon syncs settings before attributes load: targets stay 5 °C
             wine_cellar.seed_settings(appliance)
 
+    # Maintenance data is read once at setup, never polled
     refresher = maintenance.MaintenanceRefresher(hon)
 
-    async def _async_refresh() -> dict[str, Any]:
-        # Maintenance (carbon filter, check-up) at most every 6 h, not every poll
-        await refresher.async_refresh()
-        return await wine_cellar.async_refresh(hon.appliances)
-
-    # Push only by default; wine cellars additionally poll as a fallback
+    # Push only: state comes from MQTT. No REST polling, it is what led to
+    # Haier's takedown request in 2024 (takedown_faq.md).
     coordinator: DataUpdateCoordinator[dict[str, Any]] = DataUpdateCoordinator(
         hass,
         _LOGGER,
         name=DOMAIN,
-        update_method=_async_refresh if has_wine_cellar else None,
-        update_interval=wine_cellar.REFRESH_INTERVAL if has_wine_cellar else None,
+        update_method=None,
+        update_interval=None,
     )
     hon.subscribe_updates(coordinator.async_set_updated_data)
 
@@ -85,7 +80,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     refresh_token = hass.data[DOMAIN][entry.unique_id]["hon"].api.auth.refresh_token
-    wine_cellar.cancel_confirm(hass.data[DOMAIN][entry.unique_id]["coordinator"])
 
     hass.config_entries.async_update_entry(
         entry, data={**entry.data, CONF_REFRESH_TOKEN: refresh_token}
