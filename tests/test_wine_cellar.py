@@ -12,7 +12,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
 from pyhon.connection.mqtt import MQTTClient
-from pytest_homeassistant_custom_component.common import async_fire_time_changed
+from pytest_homeassistant.common import async_fire_time_changed
 
 from custom_components.hon import wine_cellar
 from tests.conftest import FakeHon, entity_id, make_appliance
@@ -27,16 +27,17 @@ def base(hon: FakeHon):
 
 
 async def test_settings_defaults_are_the_bug(api: FakeApi) -> None:
-    """Root cause: pyhon syncs settings before attributes load (5 °C defaults
-    stay until a push/update reaches this appliance object), and when it syncs it
-    truncates the °F round trip (7.8 -> 7 instead of 8)."""
+    """Root cause: the cellar reports whole °F, pyhon truncates the round trip
+    (8 °C -> 46 °F -> 7.8 °C becomes 7), so a full `settings` send would move
+    zone 2 to 7 °C. pyhon-revived 0.20 syncs at load (0.19 left the 5 °C
+    defaults until a push arrived); seeding still has to round the reported
+    values."""
     device = await make_appliance(api)
-    assert device.get("settings.tempSel") == 5
-    assert device.get("settings.tempSelZ2") == 5
     assert device.get("tempSel") == 16.1
+    assert device.get("tempSelZ2") == 7.8
     device.sync_params_to_command("settings")
     assert device.get("settings.tempSelZ2") == 7
-    assert wine_cellar.seed_settings(device) == []
+    assert not wine_cellar.seed_settings(device)
     assert device.get("settings.tempSel") == 16
     assert device.get("settings.tempSelZ2") == 8
 
@@ -71,21 +72,41 @@ async def test_light_sends_only_light_status(
         )
 
 
+def push(hon: FakeHon, parameters: dict[str, str]) -> None:
+    """Drive pyhon's MQTT handler directly, the way a push arrives."""
+    # pylint: disable=protected-access
+    client = MQTTClient.__new__(MQTTClient)
+    client._appliances = hon.appliances
+    client._hon = hon
+    topic = hon.appliances[0].info["topics"]["subscribe"][0]
+    payload = {
+        "parameters": [{"parName": k, "parNewVal": v} for k, v in parameters.items()]
+    }
+    client._on_publish_received(
+        SimpleNamespace(
+            publish_packet=SimpleNamespace(
+                topic=topic, payload=json.dumps(payload).encode()
+            )
+        )
+    )
+
+
 async def test_light_state_is_optimistic_then_confirmed(
-    hass: HomeAssistant, setup, api: FakeApi
+    hass: HomeAssistant, setup, api: FakeApi, hon: FakeHon
 ) -> None:
     light = entity_id(hass, "light", "settings.lightStatus")
     assert hass.states.get(light).state == "off"
+    reads = api.reads
     await hass.services.async_call(
         "light", "turn_on", {"entity_id": light}, blocking=True
     )
     await hass.async_block_till_done()
     assert hass.states.get(light).state == "on"
-    # The cloud confirms on the re-read after the command
-    api.state["lightStatus"] = "1"
-    async_fire_time_changed(
-        hass, dt_util.utcnow() + timedelta(seconds=wine_cellar.CONFIRM_DELAY + 15)
-    )
+    # No REST re-read after the command; the appliance confirms over MQTT
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(minutes=5))
+    await hass.async_block_till_done()
+    assert api.reads == reads
+    push(hon, {"lightStatus": "1"})
     await hass.async_block_till_done()
     assert hass.states.get(light).state == "on"
 
@@ -225,21 +246,29 @@ async def test_settings_refused_without_real_targets(api: FakeApi) -> None:
     assert api.sent == []
 
 
-async def test_polling_updates_state(hass: HomeAssistant, setup, api: FakeApi) -> None:
-    """Targets changed in the hOn app show up without reloading the entry."""
+async def test_no_cloud_polling(hass: HomeAssistant, setup, api: FakeApi) -> None:
+    """Nothing re-reads the hOn cloud after setup (Haier takedown, 2024)."""
+    reads = api.reads
+    now = dt_util.utcnow()
+    for minutes in (1, 15, 60, 6 * 60, 24 * 60, 7 * 24 * 60):
+        async_fire_time_changed(hass, now + timedelta(minutes=minutes, seconds=1))
+        await hass.async_block_till_done()
+    assert api.reads == reads
+    assert api.sent == []
+
+
+async def test_app_change_arrives_over_mqtt(
+    hass: HomeAssistant, setup, hon: FakeHon
+) -> None:
+    """Targets changed in the hOn app show up from the MQTT push alone."""
     sensor = entity_id(hass, "sensor", "tempSelZ2")
     climate = entity_id(hass, "climate", ZONE_2)
     assert hass.states.get(sensor).state == "7.8"
-    api.state["tempSelZ2"] = "10.0"
-    api.state["prCodeZ2"] = "2"
-    async_fire_time_changed(
-        hass, dt_util.utcnow() + wine_cellar.REFRESH_INTERVAL + timedelta(seconds=1)
-    )
+    push(hon, {"tempSelZ2": "10.0", "prCodeZ2": "2"})
     await hass.async_block_till_done()
     assert hass.states.get(sensor).state == "10.0"
     assert hass.states.get(climate).attributes["temperature"] == 10
     assert hass.states.get(climate).attributes["preset_mode"] == "white"
-    assert api.sent == []
 
 
 async def test_mqtt_push_reaches_base_device(
@@ -247,18 +276,7 @@ async def test_mqtt_push_reaches_base_device(
 ) -> None:
     """pyhon routes a push to the first appliance on the topic: must be the base."""
     assert hon.appliances[0].zone == 0
-    client = MQTTClient.__new__(MQTTClient)
-    client._appliances = hon.appliances
-    client._hon = hon
-    topic = hon.appliances[0].info["topics"]["subscribe"][0]
-    payload = {"parameters": [{"parName": "tempSel", "parNewVal": "12.2"}]}
-    client._on_publish_received(
-        SimpleNamespace(
-            publish_packet=SimpleNamespace(
-                topic=topic, payload=json.dumps(payload).encode()
-            )
-        )
-    )
+    push(hon, {"tempSel": "12.2"})
     await hass.async_block_till_done()
     assert hass.states.get(entity_id(hass, "sensor", "tempSel")).state == "12.2"
     assert (
@@ -284,4 +302,4 @@ async def test_other_appliance_types_unchanged(api: FakeApi) -> None:
     assert not wine_cellar.is_wine_cellar(device)
     appliances = [device]
     wine_cellar.prefer_base_appliances(appliances)
-    assert await wine_cellar.async_refresh(appliances) == {}
+    assert appliances == [device]

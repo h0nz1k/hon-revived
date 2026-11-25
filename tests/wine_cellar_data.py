@@ -169,6 +169,8 @@ class FakeApi:
         self.sent: list[dict[str, Any]] = []
         self.accept = True
         self.maintenance_calls = 0
+        # Every read of appliance state from the cloud (must not grow after setup)
+        self.reads = 0
 
     async def load_commands(self, appliance: Any) -> dict[str, Any]:
         return copy.deepcopy(COMMANDS)
@@ -180,6 +182,7 @@ class FakeApi:
         return []
 
     async def load_attributes(self, appliance: Any) -> dict[str, Any]:
+        self.reads += 1
         return {
             "shadow": {
                 "parameters": {k: {"parNewVal": v} for k, v in self.state.items()}
@@ -188,13 +191,16 @@ class FakeApi:
         }
 
     async def load_statistics(self, appliance: Any) -> dict[str, Any]:
+        self.reads += 1
         return {}
 
     async def load_maintenance(self, appliance: Any) -> dict[str, Any]:
         self.maintenance_calls += 1
+        self.reads += 1
         return copy.deepcopy(self.maintenance)
 
     async def load_appliances(self) -> list[dict[str, Any]]:
+        self.reads += 1
         return [dict(self.appliance)]
 
     async def send_command(

@@ -103,7 +103,7 @@ class HonDeviceInfo(HonEntity, ButtonEntity):
         persistent_notification.create(
             self._hass, f"````\n```\n{self._device.diagnose}\n```\n````", title
         )
-        _LOGGER.info(self._device.diagnose.replace(" ", "\u200B "))
+        _LOGGER.info(self._device.diagnose.replace(" ", "\u200b "))
 
 
 class HonDataArchive(HonEntity, ButtonEntity):
@@ -126,7 +126,7 @@ class HonDataArchive(HonEntity, ButtonEntity):
         title = f"{self._device.nick_name} Data Archive"
         text = (
             f'<a href="/local/{data}" target="_blank">{data}</a> <br/><br/> '
-            f"Use this data for [GitHub Issues of Haier hOn](https://github.com/mmalolepszy/hon-revived).<br/>"
+            f"Use this data for [GitHub Issues of Haier hOn Revived](https://github.com/mmalolepszy/hon-revived).<br/>"
             f"Or add it to the [hon-test-data collection](https://github.com/mmalolepszy/hon-test-data)."
         )
         persistent_notification.create(self._hass, text, title)

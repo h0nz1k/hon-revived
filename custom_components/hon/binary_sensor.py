@@ -28,11 +28,17 @@ BINARY_SENSORS: dict[str, tuple[HonBinarySensorEntityDescription, ...]] = {
     "WM": (
         HonBinarySensorEntityDescription(
             key="attributes.lastConnEvent.category",
-            name="Remote Control",
+            name="Connection",
             device_class=BinarySensorDeviceClass.CONNECTIVITY,
             on_value="CONNECTED",
-            icon="mdi:remote",
-            translation_key="remote_control",
+            translation_key="connection",
+        ),
+        HonBinarySensorEntityDescription(
+            key="remoteCtrValid",
+            name="Remote Control Enabled",
+            on_value=1,
+            icon="mdi:remote-tv",
+            translation_key="remote_control_enabled",
         ),
         HonBinarySensorEntityDescription(
             key="doorLockStatus",
@@ -116,6 +122,13 @@ BINARY_SENSORS: dict[str, tuple[HonBinarySensorEntityDescription, ...]] = {
             translation_key="connection",
         ),
         HonBinarySensorEntityDescription(
+            key="remoteCtrValid",
+            name="Remote Control Enabled",
+            on_value=1,
+            icon="mdi:remote-tv",
+            translation_key="remote_control_enabled",
+        ),
+        HonBinarySensorEntityDescription(
             key="doorStatus",
             name="Door",
             device_class=BinarySensorDeviceClass.DOOR,
@@ -135,8 +148,14 @@ BINARY_SENSORS: dict[str, tuple[HonBinarySensorEntityDescription, ...]] = {
             name="Connection",
             device_class=BinarySensorDeviceClass.CONNECTIVITY,
             on_value="CONNECTED",
-            icon="mdi:wifi",
             translation_key="connection",
+        ),
+        HonBinarySensorEntityDescription(
+            key="remoteCtrValid",
+            name="Remote Control Enabled",
+            on_value=1,
+            icon="mdi:remote-tv",
+            translation_key="remote_control_enabled",
         ),
         HonBinarySensorEntityDescription(
             key="attributes.parameters.onOffStatus",
@@ -199,8 +218,14 @@ BINARY_SENSORS: dict[str, tuple[HonBinarySensorEntityDescription, ...]] = {
             name="Connection",
             device_class=BinarySensorDeviceClass.CONNECTIVITY,
             on_value="CONNECTED",
-            icon="mdi:wifi",
             translation_key="connection",
+        ),
+        HonBinarySensorEntityDescription(
+            key="remoteCtrValid",
+            name="Remote Control Enabled",
+            on_value=1,
+            icon="mdi:remote-tv",
+            translation_key="remote_control_enabled",
         ),
         HonBinarySensorEntityDescription(
             key="attributes.parameters.onOffStatus",
@@ -255,6 +280,13 @@ BINARY_SENSORS: dict[str, tuple[HonBinarySensorEntityDescription, ...]] = {
             device_class=BinarySensorDeviceClass.CONNECTIVITY,
             on_value="CONNECTED",
             translation_key="connection",
+        ),
+        HonBinarySensorEntityDescription(
+            key="remoteCtrValid",
+            name="Remote Control Enabled",
+            on_value=1,
+            icon="mdi:remote-tv",
+            translation_key="remote_control_enabled",
         ),
         HonBinarySensorEntityDescription(
             key="doorStatus",
@@ -450,7 +482,7 @@ class HonBinarySensorEntity(HonEntity, BinarySensorEntity):
     def is_on(self) -> bool:
         attr = self._device.get(self.entity_description.key, None)
         value = attr.value if hasattr(attr, "value") else attr
-        return value == self.entity_description.on_value
+        return bool(value == self.entity_description.on_value)
 
     @callback
     def _handle_coordinator_update(self, update: bool = True) -> None:

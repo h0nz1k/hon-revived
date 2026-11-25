@@ -24,12 +24,9 @@ Findings credited to @crivabene (#56, ha-hon-wine-cellar), @mkatwijk (#85) and
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
 from typing import Any
 
-from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
-from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from pyhon.appliance import HonAppliance
 from pyhon.commands import HonCommand
@@ -39,10 +36,6 @@ from pyhon.parameter.range import HonParameterRange
 _LOGGER = logging.getLogger(__name__)
 
 WINE_CELLAR = "WC"
-# Fallback polling when MQTT push does not arrive (60 s, see crivabene/ha-hon-wine-cellar)
-REFRESH_INTERVAL = timedelta(seconds=60)
-# Re-read the cloud this long after a command instead of waiting for the next poll
-CONFIRM_DELAY = 15
 
 # Climate entity key -> (program code parameter, target temperature parameter)
 ZONES: dict[str, tuple[str, str]] = {
@@ -53,7 +46,7 @@ TEMPERATURE_KEYS = tuple(temp for _, temp in ZONES.values())
 
 
 def is_wine_cellar(device: HonAppliance) -> bool:
-    return device.appliance_type == WINE_CELLAR
+    return getattr(device, "appliance_type", None) == WINE_CELLAR
 
 
 def reported(device: HonAppliance, key: str) -> float | str | None:
@@ -194,7 +187,8 @@ def zone_program(device: HonAppliance, key: str) -> str | None:
     )
 
 
-def zone_command(
+# pylint: disable-next=too-many-locals
+def zone_command(  # noqa: C901 - mirrors the app's program/zone rules
     device: HonAppliance,
     key: str,
     temperature: float | None = None,
@@ -284,27 +278,13 @@ async def async_send_settings(device: HonAppliance, changed: dict[str, Any]) -> 
     _apply_optimistic(device, changed)
 
 
-_CONFIRM = "_hon_wine_cellar_confirm"
+def push_optimistic(coordinator: DataUpdateCoordinator[dict[str, Any]]) -> None:
+    """Show the sent values now; the appliance confirms them over MQTT.
 
-
-def cancel_confirm(coordinator: DataUpdateCoordinator[dict[str, Any]]) -> None:
-    if cancel := getattr(coordinator, _CONFIRM, None):
-        cancel()
-        setattr(coordinator, _CONFIRM, None)
-
-
-def schedule_confirm(
-    hass: HomeAssistant, coordinator: DataUpdateCoordinator[dict[str, Any]]
-) -> None:
-    """Push the optimistic state now and re-read the cloud shortly after."""
+    No REST re-read after a command: polling the hOn cloud is what led to
+    Haier's takedown request in 2024 (takedown_faq.md).
+    """
     coordinator.async_set_updated_data({})
-    cancel_confirm(coordinator)
-
-    async def _confirm(_now: Any) -> None:
-        setattr(coordinator, _CONFIRM, None)
-        await coordinator.async_request_refresh()
-
-    setattr(coordinator, _CONFIRM, async_call_later(hass, CONFIRM_DELAY, _confirm))
 
 
 def prefer_base_appliances(appliances: list[HonAppliance]) -> None:
@@ -317,16 +297,3 @@ def prefer_base_appliances(appliances: list[HonAppliance]) -> None:
     """
     ordered = sorted(appliances, key=lambda a: bool(is_wine_cellar(a) and a.zone))
     appliances[:] = ordered
-
-
-async def async_refresh(appliances: list[HonAppliance]) -> dict[str, Any]:
-    """Polling fallback: re-read WC base appliances from the cloud."""
-    for device in appliances:
-        if not is_wine_cellar(device) or device.zone:
-            continue
-        try:
-            await device.update(force=True)
-            seed_settings(device)
-        except Exception as error:  # pylint: disable=broad-except
-            _LOGGER.warning("Wine cellar refresh failed: %s", error)
-    return {}

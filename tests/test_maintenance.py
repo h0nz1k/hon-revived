@@ -9,6 +9,9 @@ contain no wine cellar; their ``filterCleaning`` shape must be ignored.
 
 from __future__ import annotations
 
+# pytest fixtures are injected by parameter name
+# pylint: disable=redefined-outer-name
+
 import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -17,9 +20,9 @@ import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
-from pytest_homeassistant_custom_component.common import async_fire_time_changed
+from pytest_homeassistant.common import async_fire_time_changed
 
-from custom_components.hon import maintenance, wine_cellar
+from custom_components.hon import maintenance
 from custom_components.hon.const import DOMAIN
 from custom_components.hon.diagnostics import async_get_config_entry_diagnostics
 from tests.conftest import entity_id, make_appliance
@@ -157,7 +160,7 @@ async def test_missing_keys_create_nothing(
     assert hass.states.get(entity_id(hass, "sensor", "tempSel")).state == "16.1"
 
 
-async def test_maintenance_refresh_is_throttled(
+async def test_maintenance_is_not_polled(
     hass: HomeAssistant, setup, api: FakeApi
 ) -> None:
     sensor = entity_id(hass, "sensor", KEYS["sensor"][0])
@@ -166,20 +169,16 @@ async def test_maintenance_refresh_is_throttled(
     api.appliance["lastCheckUp"] = "2026-11-01T11:00:00.0Z"
 
     now = dt_util.utcnow()
-    for minutes in (1, 2, 3):
-        async_fire_time_changed(
-            hass, now + wine_cellar.REFRESH_INTERVAL * minutes + timedelta(seconds=1)
-        )
+    for hours in (1, 6, 7, 24, 7 * 24):
+        async_fire_time_changed(hass, now + timedelta(hours=hours, seconds=1))
         await hass.async_block_till_done()
     assert api.maintenance_calls == calls
     assert hass.states.get(sensor).state == "2024-01-05T09:00:00+00:00"
 
-    # pretend the last maintenance read was 6 h ago
+    # An explicit refresh (not scheduled by the integration) still works
     refresher = hass.data[DOMAIN][setup.unique_id]["maintenance"]
-    refresher.last_refresh -= maintenance.REFRESH_INTERVAL
-    async_fire_time_changed(
-        hass, now + wine_cellar.REFRESH_INTERVAL * 4 + timedelta(seconds=1)
-    )
+    assert await refresher.async_refresh(force=True)
+    hass.data[DOMAIN][setup.unique_id]["coordinator"].async_set_updated_data({})
     await hass.async_block_till_done()
     assert api.maintenance_calls == calls + 1
     assert hass.states.get(sensor).state == "2026-11-01T10:00:00+00:00"

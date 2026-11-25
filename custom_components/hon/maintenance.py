@@ -16,7 +16,8 @@ different shape (``filterCleaning: {tot, count, remaining, percentage}``, see
 the hon-test-data dumps), which this module ignores.
 
 Every value is optional: an entity is only created when its source key exists.
-The cloud is re-read at most every :data:`REFRESH_INTERVAL`.
+The data is read when the integration loads. Nothing polls it periodically:
+polling the hOn cloud is what led to Haier's takedown request in 2024.
 """
 
 from __future__ import annotations
@@ -164,7 +165,7 @@ def last_check_up(device: HonAppliance) -> datetime | None:
     return parse_datetime(device.info.get(LAST_CHECK_UP))
 
 
-class MaintenanceRefresher:
+class MaintenanceRefresher:  # pylint: disable=too-few-public-methods
     """Re-reads maintenance data at most every REFRESH_INTERVAL."""
 
     def __init__(self, hon: Any, interval: timedelta = REFRESH_INTERVAL) -> None:
