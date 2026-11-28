@@ -98,7 +98,7 @@ SENSORS: dict[str, tuple[SensorEntityDescription, ...]] = {
         HonSensorEntityDescription(
             key="currentElectricityUsed",
             name="Current Electricity Used",
-            state_class=SensorStateClass.MEASUREMENT,
+            state_class=SensorStateClass.TOTAL_INCREASING,
             device_class=SensorDeviceClass.ENERGY,
             native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
             icon="mdi:lightning-bolt",
@@ -107,7 +107,7 @@ SENSORS: dict[str, tuple[SensorEntityDescription, ...]] = {
         HonSensorEntityDescription(
             key="currentWaterUsed",
             name="Current Water Used",
-            state_class=SensorStateClass.MEASUREMENT,
+            state_class=SensorStateClass.TOTAL_INCREASING,
             device_class=SensorDeviceClass.WATER,
             native_unit_of_measurement=UnitOfVolume.LITERS,
             icon="mdi:water",
@@ -498,19 +498,19 @@ SENSORS: dict[str, tuple[SensorEntityDescription, ...]] = {
         ),
         HonSensorEntityDescription(
             key="currentElectricityUsed",
-            translation_key="current_electricity_used",
+            translation_key="energy_current",
             icon="mdi:lightning-bolt",
             native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
             device_class=SensorDeviceClass.ENERGY,
-            state_class=SensorStateClass.MEASUREMENT,
+            state_class=SensorStateClass.TOTAL_INCREASING,
         ),
         HonSensorEntityDescription(
             key="currentWaterUsed",
-            translation_key="current_water_used",
+            translation_key="water_current",
             icon="mdi:water",
             native_unit_of_measurement=UnitOfVolume.LITERS,
             device_class=SensorDeviceClass.VOLUME,
-            state_class=SensorStateClass.MEASUREMENT,
+            state_class=SensorStateClass.TOTAL_INCREASING,
         ),
         HonSensorEntityDescription(
             key="currentCycleTime",
@@ -889,12 +889,21 @@ SENSORS: dict[str, tuple[SensorEntityDescription, ...]] = {
         ),
         HonSensorEntityDescription(
             key="tempSelZ3",
-            name="Temperature",
+            name="Selected Temperature",
             icon="mdi:snowflake-thermometer",
             state_class=SensorStateClass.MEASUREMENT,
             device_class=SensorDeviceClass.TEMPERATURE,
             native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-            translation_key="temperature",
+            translation_key="target_temperature",
+        ),
+        HonSensorEntityDescription(
+            key="tempZ2",
+            name="Temperature Freezer",
+            icon="mdi:snowflake-thermometer",
+            state_class=SensorStateClass.MEASUREMENT,
+            device_class=SensorDeviceClass.TEMPERATURE,
+            native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+            translation_key="freezer_temp",
         ),
         HonSensorEntityDescription(
             key="errors", name="Error", icon="mdi:math-log", translation_key="errors"
@@ -984,6 +993,19 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
+class HonMaintenanceSensorEntity(HonEntity, SensorEntity):
+    entity_description: HonMaintenanceSensorEntityDescription
+
+    @callback
+    def _handle_coordinator_update(self, update: bool = True) -> None:
+        description = self.entity_description
+        self._attr_native_value = description.value_fn(self._device)
+        if description.attributes_fn is not None:
+            self._attr_extra_state_attributes = description.attributes_fn(self._device)
+        if update:
+            self.schedule_update_ha_state()
+
+
 class HonSensorEntity(HonEntity, SensorEntity):
     entity_description: HonSensorEntityDescription
 
@@ -1000,19 +1022,6 @@ class HonSensorEntity(HonEntity, SensorEntity):
         if not value and self.entity_description.state_class is not None:
             self._attr_native_value = 0
         self._attr_native_value = value
-        if update:
-            self.schedule_update_ha_state()
-
-
-class HonMaintenanceSensorEntity(HonEntity, SensorEntity):
-    entity_description: HonMaintenanceSensorEntityDescription
-
-    @callback
-    def _handle_coordinator_update(self, update: bool = True) -> None:
-        description = self.entity_description
-        self._attr_native_value = description.value_fn(self._device)
-        if description.attributes_fn is not None:
-            self._attr_extra_state_attributes = description.attributes_fn(self._device)
         if update:
             self.schedule_update_ha_state()
 

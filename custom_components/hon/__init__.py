@@ -10,8 +10,15 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from pyhon import Hon
 
-from .const import DOMAIN, PLATFORMS, MOBILE_ID, CONF_REFRESH_TOKEN
-from . import maintenance, wine_cellar
+from . import maintenance
+from .const import (
+    CONF_INTEGRATION,
+    CONF_REFRESH_TOKEN,
+    DOMAIN,
+    INTEGRATION,
+    MOBILE_ID,
+    PLATFORMS,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -41,28 +48,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         refresh_token=entry.data.get(CONF_REFRESH_TOKEN, ""),
     ).create()
 
-    # Save the new refresh token
+    # Save the new refresh token; entries created before the marker get it here
     hass.config_entries.async_update_entry(
-        entry, data={**entry.data, CONF_REFRESH_TOKEN: hon.api.auth.refresh_token}
+        entry,
+        data={
+            **entry.data,
+            CONF_REFRESH_TOKEN: hon.api.auth.refresh_token,
+            CONF_INTEGRATION: INTEGRATION,
+        },
     )
 
-    wine_cellar.prefer_base_appliances(hon.appliances)
-    for appliance in hon.appliances:
-        if wine_cellar.is_wine_cellar(appliance):
-            # pyhon syncs settings before attributes load: targets stay 5 °C
-            wine_cellar.seed_settings(appliance)
-
-    # Maintenance data is read once at setup, never polled
+    # Maintenance data is read once at setup (via pyhon load_statistics), never polled.
+    # Polling the hOn cloud was what led to Haier's takedown request in 2024.
     refresher = maintenance.MaintenanceRefresher(hon)
 
-    # Push only: state comes from MQTT. No REST polling, it is what led to
-    # Haier's takedown request in 2024 (takedown_faq.md).
     coordinator: DataUpdateCoordinator[dict[str, Any]] = DataUpdateCoordinator(
-        hass,
-        _LOGGER,
-        name=DOMAIN,
-        update_method=None,
-        update_interval=None,
+        hass, _LOGGER, name=DOMAIN
     )
     hon.subscribe_updates(coordinator.async_set_updated_data)
 

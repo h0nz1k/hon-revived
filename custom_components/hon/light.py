@@ -14,7 +14,6 @@ from homeassistant.core import HomeAssistant
 from pyhon.appliance import HonAppliance
 from pyhon.parameter.range import HonParameterRange
 
-from . import wine_cellar
 from .const import DOMAIN
 from .entity import HonEntity
 
@@ -110,15 +109,7 @@ class HonLightEntity(HonEntity, LightEntity):
             self._attr_brightness = self.brightness
         else:
             light.value = light.max
-        await self._async_send_light(light.value != light.min)
-
-    async def _async_send_light(self, on: bool) -> None:
-        if wine_cellar.is_wine_cellar(self._device):
-            # Never resend `settings`: its tempSel/tempSelZ2 reset both zones
-            await wine_cellar.async_set_light(self._device, self._parameter, on)
-            wine_cellar.push_optimistic(self.coordinator)
-        else:
-            await self._device.commands[self._command].send_specific([self._parameter])
+        await self._device.commands[self._command].send_specific([self._parameter])
         self.schedule_update_ha_state()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
@@ -127,7 +118,8 @@ class HonLightEntity(HonEntity, LightEntity):
         if not isinstance(light, HonParameterRange):
             raise ValueError()
         light.value = light.min
-        await self._async_send_light(False)
+        await self._device.commands[self._command].send_specific([self._parameter])
+        self.schedule_update_ha_state()
 
     @property
     def brightness(self) -> int | None:

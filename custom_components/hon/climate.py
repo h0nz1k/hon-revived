@@ -411,7 +411,8 @@ class HonClimateEntity(HonEntity, ClimateEntity):
         modes: list[str] = []
         if self._wine_cellar:
             # Zones have no on/off of their own: start/stopProgram would carry
-            # the other zone's (default) target too
+            # the other zone's (default) target too. hvac_mode still reports
+            # off (onOffStatus 0), but OFF is not offered in hvac_modes
             self._attr_supported_features = ClimateEntityFeature.TARGET_TEMPERATURE
         elif "stopProgram" in device.commands:
             self._attr_supported_features |= ClimateEntityFeature.TURN_OFF
@@ -440,7 +441,7 @@ class HonClimateEntity(HonEntity, ClimateEntity):
     def native_target_temperature(self) -> float | None:
         """Return the temperature we try to reach."""
         if self._wine_cellar:
-            # settings.tempSel* holds the 5 °C default, the reported value is real
+            # The reported target, in whole °C (the cellar reports whole °F)
             return wine_cellar.target_temperature(
                 self._device, self.entity_description.key
             )
@@ -474,8 +475,6 @@ class HonClimateEntity(HonEntity, ClimateEntity):
 
     @property
     def hvac_mode(self) -> HVACMode:
-        if self._wine_cellar:
-            return self.entity_description.mode
         if self._device.get("onOffStatus") == 0:
             return HVACMode.OFF
         return self.entity_description.mode

@@ -1,7 +1,6 @@
-"""Anonymised hOn data for a two-zone wine cellar (WC128, HWS77GDAU1 family).
+"""Made-up hOn data for a two-zone wine cellar: only what the tests use.
 
-Structure adapted from the HWS42GDAU1 fixtures of crivabene/ha-hon-wine-cellar
-(MIT). Identifiers are made up; nothing here comes from a real account.
+Identifiers (MAC, serial, code) are fabricated; nothing here comes from a real account.
 """
 
 from __future__ import annotations
@@ -40,90 +39,65 @@ MAINTENANCE: dict[str, Any] = {
 
 
 def _fixed(value: str) -> dict[str, Any]:
-    return {
-        "category": "command",
-        "typology": "fixed",
-        "mandatory": 0,
-        "fixedValue": value,
-    }
+    return {"typology": "fixed", "fixedValue": value}
 
 
 def _range(default: str, low: str, high: str) -> dict[str, Any]:
     return {
-        "category": "command",
         "typology": "range",
-        "mandatory": 0,
         "defaultValue": default,
         "minimumValue": low,
         "maximumValue": high,
-        "incrementValue": "1",
     }
 
 
-def _ancillary(family: str) -> dict[str, Any]:
+def _family(family: str) -> dict[str, Any]:
     return {
         "programFamily": {
-            "category": "cluster",
             "typology": "enum",
-            "mandatory": 1,
             "enumValues": [family],
             "defaultValue": f"[{family}]",
-        },
-        "remoteActionable": {
-            "category": "general",
-            "typology": "fixed",
-            "mandatory": 0,
-            "fixedValue": "1",
-        },
-        "remoteVisible": {
-            "category": "general",
-            "typology": "fixed",
-            "mandatory": 0,
-            "fixedValue": "1",
-        },
+        }
     }
+
+
+def _command(parameters: dict[str, Any], family: str = "") -> dict[str, Any]:
+    # pyhon only parses dicts with a description and a protocolType as commands
+    command = {"description": "", "protocolType": "MQTT", "parameters": parameters}
+    if family:
+        command["ancillaryParameters"] = _family(family)
+    return command
 
 
 def _program(code: str, default: str, low: str, high: str) -> dict[str, Any]:
-    return {
-        "description": "The command allows to start a program",
-        "protocolType": "MQTT",
-        "parameters": {
+    return _command(
+        {
             "prCode": _fixed(code),
             "prCodeZ2": _fixed(code),
             "tempSel": _range(default, low, high),
             "tempSelZ2": _range(default, low, high),
         },
-        "ancillaryParameters": _ancillary("dashboard"),
-    }
+        "dashboard",
+    )
 
 
 def _recipe(temperature: str) -> dict[str, Any]:
-    return {
-        "description": "The command allows to start a program",
-        "protocolType": "MQTT",
-        "parameters": {
-            "tempSel": _fixed(temperature),
-            "tempSelZ2": _fixed(temperature),
-        },
-        "ancillaryParameters": _ancillary("download"),
-    }
+    return _command(
+        {"tempSel": _fixed(temperature), "tempSelZ2": _fixed(temperature)},
+        "download",
+    )
 
 
 COMMANDS: dict[str, Any] = {
-    "resultCode": "0",
-    "applianceModel": {"options": {}},
-    "settings": {
-        "description": "Set parameters",
-        "protocolType": "MQTT",
-        "parameters": {
+    "settings": _command(
+        {
             "lightStatus": _range("0", "0", "1"),
             "sabbathStatus": _range("0", "0", "1"),
             "tempSel": _range("5", "5", "20"),
             "tempSelZ2": _range("5", "5", "20"),
             "tempUnit": _range("0", "0", "1"),
-        },
-    },
+        }
+    ),
     "startProgram": {
         "PROGRAMS.WC.SPARKLING": _program("3", "8", "5", "8"),
         "PROGRAMS.WC.WHITE": _program("2", "12", "9", "12"),
@@ -167,6 +141,7 @@ class FakeApi:
         )
         self.appliance = dict(APPLIANCE if appliance is None else appliance)
         self.sent: list[dict[str, Any]] = []
+        self.history: list[dict[str, Any]] = []
         self.accept = True
         self.maintenance_calls = 0
         # Every read of appliance state from the cloud (must not grow after setup)
@@ -179,7 +154,7 @@ class FakeApi:
         return []
 
     async def load_command_history(self, appliance: Any) -> list[Any]:
-        return []
+        return copy.deepcopy(self.history)
 
     async def load_attributes(self, appliance: Any) -> dict[str, Any]:
         self.reads += 1

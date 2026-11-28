@@ -12,7 +12,6 @@ from homeassistant.core import HomeAssistant
 from pyhon.parameter.base import HonParameter
 from pyhon.parameter.range import HonParameterRange
 
-from . import wine_cellar
 from .const import DOMAIN
 from .entity import HonEntity
 from .util import unique_entities
@@ -454,19 +453,7 @@ class HonSwitchEntity(HonEntity, SwitchEntity):
         setting = self._device.settings[f"settings.{self.entity_description.key}"]
         if type(setting) is HonParameter:
             return
-        value = setting.max if isinstance(setting, HonParameterRange) else 1
-        await self._async_send_setting(setting, value)
-
-    async def _async_send_setting(self, setting: HonParameter, value: Any) -> None:
-        if wine_cellar.is_wine_cellar(self._device):
-            # Seed the zone targets with reported values, never the 5 °C defaults
-            await wine_cellar.async_send_settings(
-                self._device, {self.entity_description.key: value}
-            )
-            wine_cellar.push_optimistic(self.coordinator)
-            self.schedule_update_ha_state()
-            return
-        setting.value = value
+        setting.value = setting.max if isinstance(setting, HonParameterRange) else 1
         self.schedule_update_ha_state()
         await self._device.commands["settings"].send_specific(
             [self.entity_description.key]
@@ -477,8 +464,12 @@ class HonSwitchEntity(HonEntity, SwitchEntity):
         setting = self._device.settings[f"settings.{self.entity_description.key}"]
         if type(setting) is HonParameter:
             return
-        value = setting.min if isinstance(setting, HonParameterRange) else 0
-        await self._async_send_setting(setting, value)
+        setting.value = setting.min if isinstance(setting, HonParameterRange) else 0
+        self.schedule_update_ha_state()
+        await self._device.commands["settings"].send_specific(
+            [self.entity_description.key]
+        )
+        self.coordinator.async_set_updated_data({})
 
     @property
     def available(self) -> bool:

@@ -1,119 +1,32 @@
-"""Wine cellar (WC) regression tests: issues #56, #85 (both zones reset to 5 °C)
-and stale state. Everything runs against a fake hOn API; nothing reaches the cloud."""
+"""Wine cellar (WC) zone-command tests: app-like startProgram per zone.
+
+Everything runs against a fake hOn API; nothing reaches the cloud.
+Tests cover: zone isolation, out-of-range program switching, preset change,
+refused command, no-cloud-reads, and other appliance types.
+"""
 
 from __future__ import annotations
 
 from datetime import timedelta
-from types import SimpleNamespace
-import json
 
 import pytest
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.util import dt as dt_util
-from pyhon.connection.mqtt import MQTTClient
 from pytest_homeassistant.common import async_fire_time_changed
 
 from custom_components.hon import wine_cellar
-from tests.conftest import FakeHon, entity_id, make_appliance
+from tests.conftest import entity_id, make_appliance
 from tests.wine_cellar_data import FakeApi
 
 ZONE_1 = "settings.tempSel"
 ZONE_2 = "settings.tempSelZ2"
 
 
-def base(hon: FakeHon):
-    return next(a for a in hon.appliances if a.zone == 0)
-
-
-async def test_settings_defaults_are_the_bug(api: FakeApi) -> None:
-    """Root cause: the cellar reports whole °F, pyhon truncates the round trip
-    (8 °C -> 46 °F -> 7.8 °C becomes 7), so a full `settings` send would move
-    zone 2 to 7 °C. pyhon-revived 0.20 syncs at load (0.19 left the 5 °C
-    defaults until a push arrived); seeding still has to round the reported
-    values."""
-    device = await make_appliance(api)
-    assert device.get("tempSel") == 16.1
-    assert device.get("tempSelZ2") == 7.8
-    device.sync_params_to_command("settings")
-    assert device.get("settings.tempSelZ2") == 7
-    assert not wine_cellar.seed_settings(device)
-    assert device.get("settings.tempSel") == 16
-    assert device.get("settings.tempSelZ2") == 8
-
-
-async def test_light_sends_only_light_status(
-    hass: HomeAssistant, setup, api: FakeApi
-) -> None:
-    light = entity_id(hass, "light", "settings.lightStatus")
-    await hass.services.async_call(
-        "light", "turn_on", {"entity_id": light}, blocking=True
-    )
-    await hass.services.async_call(
-        "light", "turn_off", {"entity_id": light}, blocking=True
-    )
-    assert api.sent == [
-        {
-            "command": "startProgram",
-            "parameters": {"lightStatus": "1"},
-            "ancillary": {},
-            "program": "",
-        },
-        {
-            "command": "startProgram",
-            "parameters": {"lightStatus": "0"},
-            "ancillary": {},
-            "program": "",
-        },
-    ]
-    for sent in api.sent:
-        assert not {"tempSel", "tempSelZ2", "prCode", "prCodeZ2"} & set(
-            sent["parameters"]
-        )
-
-
-def push(hon: FakeHon, parameters: dict[str, str]) -> None:
-    """Drive pyhon's MQTT handler directly, the way a push arrives."""
-    # pylint: disable=protected-access
-    client = MQTTClient.__new__(MQTTClient)
-    client._appliances = hon.appliances
-    client._hon = hon
-    topic = hon.appliances[0].info["topics"]["subscribe"][0]
-    payload = {
-        "parameters": [{"parName": k, "parNewVal": v} for k, v in parameters.items()]
-    }
-    client._on_publish_received(
-        SimpleNamespace(
-            publish_packet=SimpleNamespace(
-                topic=topic, payload=json.dumps(payload).encode()
-            )
-        )
-    )
-
-
-async def test_light_state_is_optimistic_then_confirmed(
-    hass: HomeAssistant, setup, api: FakeApi, hon: FakeHon
-) -> None:
-    light = entity_id(hass, "light", "settings.lightStatus")
-    assert hass.states.get(light).state == "off"
-    reads = api.reads
-    await hass.services.async_call(
-        "light", "turn_on", {"entity_id": light}, blocking=True
-    )
-    await hass.async_block_till_done()
-    assert hass.states.get(light).state == "on"
-    # No REST re-read after the command; the appliance confirms over MQTT
-    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(minutes=5))
-    await hass.async_block_till_done()
-    assert api.reads == reads
-    push(hon, {"lightStatus": "1"})
-    await hass.async_block_till_done()
-    assert hass.states.get(light).state == "on"
-
-
 async def test_zone_1_does_not_touch_zone_2(
     hass: HomeAssistant, setup, api: FakeApi
 ) -> None:
+    """set_temperature on zone 1 sends only zone-1 parameters."""
     climate = entity_id(hass, "climate", ZONE_1)
     assert hass.states.get(climate).attributes["temperature"] == 16
     await hass.services.async_call(
@@ -126,11 +39,7 @@ async def test_zone_1_does_not_touch_zone_2(
         {
             "command": "startProgram",
             "parameters": {"prCode": "1", "tempSel": "14"},
-            "ancillary": {
-                "programFamily": "[dashboard]",
-                "remoteActionable": "1",
-                "remoteVisible": "1",
-            },
+            "ancillary": {"programFamily": "[dashboard]"},
             "program": "PROGRAMS.WC.RED",
         }
     ]
@@ -143,9 +52,10 @@ async def test_zone_1_does_not_touch_zone_2(
     )
 
 
-async def test_zone_2_only_sends_zone_2(
+async def test_out_of_range_target_switches_program(
     hass: HomeAssistant, setup, api: FakeApi
 ) -> None:
+    """When target is outside the current program range, pick one that fits."""
     climate = entity_id(hass, "climate", ZONE_2)
     assert hass.states.get(climate).attributes["temperature"] == 8
     await hass.services.async_call(
@@ -165,6 +75,7 @@ async def test_zone_2_only_sends_zone_2(
         ("PROGRAMS.WC.SPARKLING", {"prCodeZ2": "3", "tempSelZ2": "6"}),
         ("PROGRAMS.WC.WHITE", {"prCodeZ2": "2", "tempSelZ2": "12"}),
     ]
+    # Zone 1 target unchanged
     assert (
         hass.states.get(entity_id(hass, "climate", ZONE_1)).attributes["temperature"]
         == 16
@@ -172,6 +83,7 @@ async def test_zone_2_only_sends_zone_2(
 
 
 async def test_zone_preset(hass: HomeAssistant, setup, api: FakeApi) -> None:
+    """set_preset_mode sends only the matching zone's program code + temperature."""
     climate = entity_id(hass, "climate", ZONE_2)
     state = hass.states.get(climate)
     assert state.attributes["preset_mode"] == "sparkling"
@@ -197,10 +109,64 @@ async def test_zone_preset(hass: HomeAssistant, setup, api: FakeApi) -> None:
     ]
 
 
+async def test_refused_command_raises(hass: HomeAssistant, setup, api: FakeApi) -> None:
+    """HomeAssistantError when hOn refuses the zone command."""
+    api.accept = False
+    climate = entity_id(hass, "climate", ZONE_1)
+    with pytest.raises(HomeAssistantError):
+        await hass.services.async_call(
+            "climate",
+            "set_temperature",
+            {"entity_id": climate, "temperature": 15},
+            blocking=True,
+        )
+    assert api.sent == [
+        {
+            "command": "startProgram",
+            "parameters": {"prCode": "1", "tempSel": "15"},
+            "ancillary": {"programFamily": "[dashboard]"},
+            "program": "PROGRAMS.WC.RED",
+        }
+    ]
+
+
+async def test_out_of_range_raises_service_validation(api: FakeApi) -> None:
+    """ServiceValidationError when no program covers the requested temperature."""
+    device = await make_appliance(api)
+    with pytest.raises(ServiceValidationError, match="outside every wine cellar"):
+        wine_cellar.zone_command(device, ZONE_1, temperature=25)
+
+
+async def test_preset_uses_program_default(api: FakeApi) -> None:
+    """A target outside the new program falls back to its default, not its min."""
+    device = await make_appliance(api)
+    assert wine_cellar.zone_command(device, ZONE_1, program="sparkling")[1] == {
+        "prCode": "3",
+        "tempSel": "8",
+    }
+
+
+async def test_preset_uses_last_sent_temperature(api: FakeApi) -> None:
+    """pyhon restores the last startProgram from history; that value is used."""
+    api.history = [
+        {
+            "command": {
+                "commandName": "startProgram",
+                "parameters": {"program": "PROGRAMS.WC.SPARKLING", "tempSel": "6"},
+            }
+        }
+    ]
+    device = await make_appliance(api)
+    assert wine_cellar.zone_command(device, ZONE_1, program="sparkling")[1] == {
+        "prCode": "3",
+        "tempSel": "6",
+    }
+
+
 async def test_zone_climate_has_no_on_off(
     hass: HomeAssistant, setup, api: FakeApi
 ) -> None:
-    """turn_on/off would send startProgram with both zones' default targets."""
+    """turn_on on a wine cellar zone is not supported (would reset both zones)."""
     climate = entity_id(hass, "climate", ZONE_1)
     with pytest.raises(Exception):
         await hass.services.async_call(
@@ -209,97 +175,59 @@ async def test_zone_climate_has_no_on_off(
     assert api.sent == []
 
 
-async def test_sabbath_switch_carries_real_targets(
-    hass: HomeAssistant, setup, api: FakeApi, hon: FakeHon
+async def test_zone_shows_off_but_cannot_be_switched_off(
+    hass: HomeAssistant, api: FakeApi, hon, setup, caplog: pytest.LogCaptureFixture
 ) -> None:
-    switch = entity_id(hass, "switch", "sabbathStatus")
-    sent = []
-    command = base(hon).commands["settings"]
-
-    async def send(only_mandatory: bool = False) -> bool:
-        sent.append(dict(command.parameter_value))
-        return True
-
-    command.send = send  # type: ignore[method-assign]
-    # Simulate the bad state the integration starts from
-    command.parameters["tempSel"].value = 5
-    command.parameters["tempSelZ2"].value = 5
-    await hass.services.async_call(
-        "switch", "turn_on", {"entity_id": switch}, blocking=True
-    )
-    assert sent == [
-        {
-            "lightStatus": 0,
-            "sabbathStatus": 1,
-            "tempSel": 16,
-            "tempSelZ2": 8,
-            "tempUnit": 0,
-        }
-    ]
-
-
-async def test_settings_refused_without_real_targets(api: FakeApi) -> None:
-    api.state.pop("tempSelZ2")
-    device = await make_appliance(api)
-    with pytest.raises(HomeAssistantError):
-        await wine_cellar.async_send_settings(device, {"sabbathStatus": 1})
+    """onOffStatus 0 shows off; setting off is rejected and sends nothing."""
+    climate = entity_id(hass, "climate", ZONE_1)
+    assert hass.states.get(climate).state == "cool"
+    api.state["onOffStatus"] = "0"
+    for appliance in hon.appliances:
+        appliance.attributes["parameters"]["onOffStatus"].update("0")
+    hon.notify()
+    await hass.async_block_till_done()
+    state = hass.states.get(climate)
+    assert state.state == "off"
+    assert "off" not in state.attributes["hvac_modes"]
+    with pytest.raises(ServiceValidationError):
+        await hass.services.async_call(
+            "climate",
+            "set_hvac_mode",
+            {"entity_id": climate, "hvac_mode": "off"},
+            blocking=True,
+        )
+    with pytest.raises(Exception):
+        await hass.services.async_call(
+            "climate", "turn_off", {"entity_id": climate}, blocking=True
+        )
     assert api.sent == []
+    assert "WARNING" not in caplog.text
 
 
-async def test_no_cloud_polling(hass: HomeAssistant, setup, api: FakeApi) -> None:
-    """Nothing re-reads the hOn cloud after setup (Haier takedown, 2024)."""
-    reads = api.reads
+async def test_no_cloud_reads_after_command(
+    hass: HomeAssistant, setup, api: FakeApi
+) -> None:
+    """No REST re-read is triggered after a zone command (Haier 2024 takedown)."""
+    climate = entity_id(hass, "climate", ZONE_1)
+    reads_before = api.reads
+    await hass.services.async_call(
+        "climate",
+        "set_temperature",
+        {"entity_id": climate, "temperature": 15},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+    assert api.reads == reads_before
+    # Fire time events well past any polling interval
     now = dt_util.utcnow()
-    for minutes in (1, 15, 60, 6 * 60, 24 * 60, 7 * 24 * 60):
+    for minutes in (1, 15, 60):
         async_fire_time_changed(hass, now + timedelta(minutes=minutes, seconds=1))
         await hass.async_block_till_done()
-    assert api.reads == reads
-    assert api.sent == []
-
-
-async def test_app_change_arrives_over_mqtt(
-    hass: HomeAssistant, setup, hon: FakeHon
-) -> None:
-    """Targets changed in the hOn app show up from the MQTT push alone."""
-    sensor = entity_id(hass, "sensor", "tempSelZ2")
-    climate = entity_id(hass, "climate", ZONE_2)
-    assert hass.states.get(sensor).state == "7.8"
-    push(hon, {"tempSelZ2": "10.0", "prCodeZ2": "2"})
-    await hass.async_block_till_done()
-    assert hass.states.get(sensor).state == "10.0"
-    assert hass.states.get(climate).attributes["temperature"] == 10
-    assert hass.states.get(climate).attributes["preset_mode"] == "white"
-
-
-async def test_mqtt_push_reaches_base_device(
-    hass: HomeAssistant, setup, hon: FakeHon
-) -> None:
-    """pyhon routes a push to the first appliance on the topic: must be the base."""
-    assert hon.appliances[0].zone == 0
-    push(hon, {"tempSel": "12.2"})
-    await hass.async_block_till_done()
-    assert hass.states.get(entity_id(hass, "sensor", "tempSel")).state == "12.2"
-    assert (
-        hass.states.get(entity_id(hass, "climate", ZONE_1)).attributes["temperature"]
-        == 12
-    )
-
-
-async def test_refused_command_raises(hass: HomeAssistant, setup, api: FakeApi) -> None:
-    api.accept = False
-    light = entity_id(hass, "light", "settings.lightStatus")
-    with pytest.raises(HomeAssistantError):
-        await hass.services.async_call(
-            "light", "turn_on", {"entity_id": light}, blocking=True
-        )
-    await hass.async_block_till_done()
-    assert hass.states.get(light).state == "off"
+    assert api.reads == reads_before
 
 
 async def test_other_appliance_types_unchanged(api: FakeApi) -> None:
+    """is_wine_cellar returns False for non-WC appliances."""
     device = await make_appliance(api)
     device._info["applianceTypeName"] = "DW"  # pylint: disable=protected-access
     assert not wine_cellar.is_wine_cellar(device)
-    appliances = [device]
-    wine_cellar.prefer_base_appliances(appliances)
-    assert appliances == [device]

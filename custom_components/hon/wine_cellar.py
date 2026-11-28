@@ -1,24 +1,11 @@
-"""Wine cellar (WC) helpers: send only what changes, never the 5 °C defaults.
+"""Wine cellar (WC) helpers: per-zone commands for two-zone wine cellars.
 
-A two-zone Haier wine cellar (e.g. HWS42GDAU1 / WC127, HWS77GDAU1 / WC128,
-WC666) gets loaded by pyhon as a base appliance plus Z1/Z2 clones. pyhon syncs
-the reported values into ``settings`` before the attributes are loaded, so
-``settings.tempSel`` / ``settings.tempSelZ2`` keep their 5 °C default; MQTT
-pushes go to the first clone, never to the base appliance, and nothing polls.
-A full ``settings`` send then resets *both* zones to 5 °C (issues #56, #85).
-Even when pyhon does sync, it truncates the whole-°F round trip the cellar
-reports (16 °C -> 61 °F -> 16.1 °C; 8 °C -> 46 °F -> 7.8 °C becomes 7).
-
-The hOn app never does that. Its command history shows:
-
-* light: ``startProgram`` with only ``{lightStatus}``, no program name and no
-  ancillary parameters;
-* one zone: ``startProgram`` with only that zone's ``{prCode, tempSel}`` or
-  ``{prCodeZ2, tempSelZ2}`` plus the program name and its ancillary parameters
-  (``programFamily: [dashboard]``); recipes carry only the temperature.
-
-Findings credited to @crivabene (#56, ha-hon-wine-cellar), @mkatwijk (#85) and
-@alexw23 (PR #78).
+A two-zone Haier wine cellar has two independent temperature zones. A zone
+change sends ``startProgram`` with only that zone's ``{prCode, tempSel}`` or
+``{prCodeZ2, tempSelZ2}`` (recipes: only the temperature), the program name
+and its ancillary parameters.
+A target outside the current program's range switches to a program whose
+range fits; targets no program accepts are rejected before sending.
 """
 
 from __future__ import annotations
@@ -42,7 +29,6 @@ ZONES: dict[str, tuple[str, str]] = {
     "settings.tempSel": ("prCode", "tempSel"),
     "settings.tempSelZ2": ("prCodeZ2", "tempSelZ2"),
 }
-TEMPERATURE_KEYS = tuple(temp for _, temp in ZONES.values())
 
 
 def is_wine_cellar(device: HonAppliance) -> bool:
@@ -74,41 +60,6 @@ def target_temperature(device: HonAppliance, key: str) -> float | None:
     return float(value)
 
 
-def _snap(parameter: HonParameterRange, value: float) -> float:
-    steps = round((value - parameter.min) / parameter.step)
-    return min(
-        max(parameter.min + steps * parameter.step, parameter.min), parameter.max
-    )
-
-
-def seed_settings(device: HonAppliance, skip: tuple[str, ...] = ()) -> list[str]:
-    """Copy reported values into the settings command (rounded to the step).
-
-    Returns the temperature keys that could not be seeded from a reported value.
-    """
-    missing: list[str] = []
-    if not (command := device.commands.get("settings")):
-        return missing
-    for key, parameter in command.parameters.items():
-        if key in skip:
-            continue
-        value = reported(device, key)
-        if value is None:
-            if key in TEMPERATURE_KEYS:
-                missing.append(key)
-            continue
-        try:
-            if isinstance(parameter, HonParameterRange):
-                parameter.value = _snap(parameter, float(value))
-            else:
-                parameter.value = str(value)
-        except ValueError as error:
-            _LOGGER.debug("Can't seed %s: %s", key, error)
-            if key in TEMPERATURE_KEYS:
-                missing.append(key)
-    return missing
-
-
 def _apply_optimistic(device: HonAppliance, parameters: dict[str, Any]) -> None:
     """Show the sent values until the cloud confirms (pyhon locks them ~10 s)."""
     attributes = device.attributes.setdefault("parameters", {})
@@ -129,11 +80,6 @@ async def _async_send(
     ):
         raise HomeAssistantError("hOn refused the wine cellar command")
     _apply_optimistic(device, parameters)
-
-
-async def async_set_light(device: HonAppliance, parameter: str, on: bool) -> None:
-    """Light exactly like the hOn app: startProgram {lightStatus} only."""
-    await _async_send(device, {parameter: "1" if on else "0"})
 
 
 def _programs(device: HonAppliance) -> dict[str, HonCommand]:
@@ -187,8 +133,62 @@ def zone_program(device: HonAppliance, key: str) -> str | None:
     )
 
 
-# pylint: disable-next=too-many-locals
-def zone_command(  # noqa: C901 - mirrors the app's program/zone rules
+def _program_target(
+    device: HonAppliance, command: HonCommand, temp_key: str
+) -> int | None:
+    """Target for a chosen program: the current one if it fits, else its default."""
+    current_target = whole(reported(device, temp_key))
+    if current_target is not None and _fits(command, temp_key, current_target):
+        return current_target
+    parameter = command.parameters.get(temp_key)
+    if isinstance(parameter, (HonParameterFixed, HonParameterRange)):
+        # defaultValue, or what pyhon restored from the command history
+        return whole(parameter.value)
+    return None
+
+
+def _program_path(
+    device: HonAppliance, temp_key: str, program: str, target: int | None
+) -> tuple[HonCommand, int | None]:
+    """The chosen program, with the requested or a fitting target."""
+    if (command := _programs(device).get(program)) is None:
+        raise ServiceValidationError(f"Unknown wine cellar program {program}")
+    if target is None:
+        target = _program_target(device, command, temp_key)
+    return command, target
+
+
+def _temperature_path(
+    device: HonAppliance, code_key: str, temp_key: str, target: int
+) -> HonCommand:
+    """The current base program if the target fits, else the first that does."""
+    base = [
+        command
+        for command in _programs(device).values()
+        if _fixed(command, code_key, "prCode") is not None
+        and isinstance(command.parameters.get(temp_key), HonParameterRange)
+    ]
+    current_code = whole(reported(device, code_key))
+    current = [c for c in base if whole(_fixed(c, code_key, "prCode")) == current_code]
+    if not (fitting := [c for c in current + base if _fits(c, temp_key, target)]):
+        raise ServiceValidationError(
+            f"{target} °C is outside every wine cellar program range"
+        )
+    return fitting[0]
+
+
+def _zone_parameters(
+    command: HonCommand, code_key: str, temp_key: str, target: int
+) -> dict[str, str]:
+    """Only this zone's program code (base programs) and target."""
+    parameters: dict[str, str] = {}
+    if (code := _fixed(command, code_key, "prCode")) is not None:
+        parameters[code_key] = code
+    parameters[temp_key] = str(target)
+    return parameters
+
+
+def zone_command(
     device: HonAppliance,
     key: str,
     temperature: float | None = None,
@@ -198,53 +198,18 @@ def zone_command(  # noqa: C901 - mirrors the app's program/zone rules
     if key not in ZONES:
         raise ServiceValidationError(f"Unknown wine cellar zone {key}")
     code_key, temp_key = ZONES[key]
-    programs = _programs(device)
-    current_code = whole(reported(device, code_key))
-    current_target = whole(reported(device, temp_key))
     target = whole(temperature) if temperature is not None else None
-
     if program is not None:
-        if (command := programs.get(program)) is None:
-            raise ServiceValidationError(f"Unknown wine cellar program {program}")
-        if target is None:
-            parameter = command.parameters.get(temp_key)
-            if current_target is not None and _fits(command, temp_key, current_target):
-                target = current_target
-            elif isinstance(parameter, HonParameterFixed):
-                target = whole(parameter.value)
-            elif isinstance(parameter, HonParameterRange):
-                target = whole(getattr(parameter, "_default", parameter.min))
+        command, target = _program_path(device, temp_key, program, target)
+    elif target is None:
+        raise ServiceValidationError("Missing target temperature")
     else:
-        if target is None:
-            raise ServiceValidationError("Missing target temperature")
-        base = {
-            name: command
-            for name, command in programs.items()
-            if _fixed(command, code_key, "prCode") is not None
-            and isinstance(command.parameters.get(temp_key), HonParameterRange)
-        }
-        current = [
-            c
-            for c in base.values()
-            if whole(_fixed(c, code_key, "prCode")) == current_code
-        ]
-        fitting = [
-            c for c in current + list(base.values()) if _fits(c, temp_key, target)
-        ]
-        if not fitting:
-            raise ServiceValidationError(
-                f"{target} °C is outside every wine cellar program range"
-            )
-        command = fitting[0]
-
+        command = _temperature_path(device, code_key, temp_key, target)
     if target is None or not _fits(command, temp_key, target):
         raise ServiceValidationError(
             f"{target} °C does not fit program {command.category}"
         )
-    parameters: dict[str, str] = {}
-    if (code := _fixed(command, code_key, "prCode")) is not None:
-        parameters[code_key] = code
-    parameters[temp_key] = str(target)
+    parameters = _zone_parameters(command, code_key, temp_key, target)
     return command.category, parameters, _ancillary(command)
 
 
@@ -260,24 +225,6 @@ async def async_set_zone(
     await _async_send(device, parameters, ancillary, program_name)
 
 
-async def async_send_settings(device: HonAppliance, changed: dict[str, Any]) -> None:
-    """Send `settings` with every other parameter seeded from reported values.
-
-    Refuses to send when a zone target cannot be seeded, instead of letting
-    the 5 °C defaults through.
-    """
-    if missing := seed_settings(device, skip=tuple(changed)):
-        raise HomeAssistantError(
-            f"Wine cellar targets {missing} unknown, refusing to reset them"
-        )
-    command = device.commands["settings"]
-    for key, value in changed.items():
-        command.parameters[key].value = value
-    if not await command.send():
-        raise HomeAssistantError("hOn refused the wine cellar command")
-    _apply_optimistic(device, changed)
-
-
 def push_optimistic(coordinator: DataUpdateCoordinator[dict[str, Any]]) -> None:
     """Show the sent values now; the appliance confirms them over MQTT.
 
@@ -285,15 +232,3 @@ def push_optimistic(coordinator: DataUpdateCoordinator[dict[str, Any]]) -> None:
     Haier's takedown request in 2024 (takedown_faq.md).
     """
     coordinator.async_set_updated_data({})
-
-
-def prefer_base_appliances(appliances: list[HonAppliance]) -> None:
-    """Put WC base appliances before their zone clones (in place).
-
-    pyhon appends the Z1/Z2 clones before the base appliance and routes an MQTT
-    update to the *first* appliance subscribed to the topic, so the base device,
-    which carries the real entities, never received pushes. The list is mutated
-    in place because pyhon's MQTT client holds a reference to it (PR #78).
-    """
-    ordered = sorted(appliances, key=lambda a: bool(is_wine_cellar(a) and a.zone))
-    appliances[:] = ordered
